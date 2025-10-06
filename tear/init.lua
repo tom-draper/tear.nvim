@@ -460,6 +460,81 @@ function M.visualize()
   api.nvim_buf_set_keymap(buf, "n", "<Esc>", ":close<CR>", {noremap = true, silent = true})
 end
 
+-- Name the current note
+function M.name(new_name)
+  local bufnr = api.nvim_get_current_buf()
+  local current_file = api.nvim_buf_get_name(bufnr)
+  local buftype = api.nvim_buf_get_option(bufnr, "buftype")
+  
+  -- Check if this is an unsaved Tear note
+  if buftype == "acwrite" and current_file:match("%[Tear Note%]") then
+    -- Allow setting name for unsaved notes
+    if not new_name or new_name == "" then
+      vim.ui.input({prompt = "Set name for note (without extension): "}, function(input)
+        if input then
+          api.nvim_buf_set_var(bufnr, "tear_unsaved_name", input)
+          vim.notify("Name set to: " .. input .. M.config.file_extension, vim.log.levels.INFO)
+        end
+      end)
+      return
+    end
+    
+    api.nvim_buf_set_var(bufnr, "tear_unsaved_name", new_name)
+    vim.notify("Name set to: " .. new_name .. (new_name:match(vim.pesc(M.config.file_extension) .. "$") and "" or M.config.file_extension), vim.log.levels.INFO)
+    return
+  end
+  
+  -- Check if current file is in the notes directory
+  if not current_file:match("^" .. vim.pesc(M.config.notes_path)) then
+    vim.notify("Current file is not a tear note", vim.log.levels.WARN)
+    return
+  end
+  
+  if not new_name or new_name == "" then
+    vim.ui.input({prompt = "New name (without extension): "}, function(input)
+      if input then
+        M.name(input)
+      end
+    end)
+    return
+  end
+  
+  -- Ensure the name has the correct extension
+  if not new_name:match(vim.pesc(M.config.file_extension) .. "$") then
+    new_name = new_name .. M.config.file_extension
+  end
+  
+  local old_filename = fn.fnamemodify(current_file, ":t")
+  local new_filepath = M.config.notes_path .. "/" .. new_name
+  
+  -- Check if target file already exists
+  if fn.filereadable(new_filepath) == 1 then
+    vim.notify("A file with that name already exists", vim.log.levels.ERROR)
+    return
+  end
+  
+  -- Rename the file
+  local ok = os.rename(current_file, new_filepath)
+  if not ok then
+    vim.notify("Failed to rename file", vim.log.levels.ERROR)
+    return
+  end
+  
+  -- Update metadata cache
+  if metadata_cache[old_filename] then
+    metadata_cache[new_name] = metadata_cache[old_filename]
+    metadata_cache[new_name].filepath = new_filepath
+    metadata_cache[old_filename] = nil
+    save_metadata()
+  end
+  
+  -- Update the buffer
+  api.nvim_buf_set_name(0, new_filepath)
+  api.nvim_buf_set_option(0, "modified", false)
+  
+  vim.notify(string.format("Renamed: %s → %s", old_filename, new_name), vim.log.levels.INFO)
+end
+
 -- Reindex all notes (useful after manual changes)
 function M.reindex()
   vim.notify("Reindexing notes...", vim.log.levels.INFO)
@@ -507,6 +582,9 @@ function M.setup(opts)
   end, {nargs = "?"})
   api.nvim_create_user_command("TearVisualize", function() M.visualize() end, {})
   api.nvim_create_user_command("TearReindex", function() M.reindex() end, {})
+  api.nvim_create_user_command("TearName", function(opts)
+    M.name(opts.args)
+  end, {nargs = "?"})
   
   -- Auto-update metadata when notes are saved
   local aug = api.nvim_create_augroup("TearAutoUpdate", {clear = true})
