@@ -171,12 +171,21 @@ function M.tear()
       
       -- Generate filename
       local filename
-      if M.config.naming_strategy == "content" then
-        filename = generate_filename_from_content(lines)
+      
+      -- First check if a custom name was set with :TearName
+      local ok, custom_name = pcall(api.nvim_buf_get_var, bufnr, "tear_unsaved_name")
+      
+      if ok and custom_name then
+        -- Use the custom name set by :TearName
+        filename = custom_name
+        if not filename:match(vim.pesc(M.config.file_extension) .. "$") then
+          filename = filename .. M.config.file_extension
+        end
+      elseif M.config.naming_strategy == "content" then
+        filename = generate_filename_from_content(lines) .. M.config.file_extension
       else
-        filename = os.date(M.config.datetime_format)
+        filename = os.date(M.config.datetime_format) .. M.config.file_extension
       end
-      filename = filename .. M.config.file_extension
       
       -- Save file
       ensure_directory(M.config.notes_path)
@@ -203,6 +212,11 @@ function M.tear()
       
       -- Update metadata
       update_metadata(filepath, lines)
+      
+      -- Clear the custom name variable since it's now saved
+      if ok and custom_name then
+        pcall(api.nvim_buf_del_var, bufnr, "tear_unsaved_name")
+      end
       
       -- Update buffer to point to real file
       api.nvim_buf_set_option(bufnr, "buftype", "")
