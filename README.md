@@ -70,3 +70,6 @@ Just save with `:w`.
 ```
 :TearVisualize
 ```
+<p align="center">
+  <img width="50" height="50" alt="image" src="https://github.com/user-attachments/assets/39d045d6-3455-4d70-a779-b0542974aed8" />
+</p>
