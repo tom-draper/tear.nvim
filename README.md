@@ -49,7 +49,7 @@ This is my first #book review
 #book-review #books
 ```
 
-File name and save location is already taken care of.
+File name and save location are already taken care of.
 
 Just save with `:w`.
 
