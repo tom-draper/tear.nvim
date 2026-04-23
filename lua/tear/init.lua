@@ -9,7 +9,7 @@ M.config = {
 	notes = {
 		path = vim.fn.expand("~/notes/tear"),
 		extension = ".md",
-		filename_strategy = "timestamp", -- "timestamp" or "title"
+		filename_strategy = "timestamp", -- "timestamp" or "content"
 		datetime_format = "%Y-%m-%d-%H-%M-%S",
 	},
 	metadata = {
@@ -203,7 +203,7 @@ function M.tear()
 				if not filename:match(vim.pesc(M.config.notes.extension) .. "$") then
 					filename = filename .. M.config.notes.extension
 				end
-			elseif M.config.notes.filename_strategy == "title" then
+			elseif M.config.notes.filename_strategy == "content" then
 				filename = generate_filename_from_content(lines) .. M.config.notes.extension
 			else
 				filename = os.date(M.config.notes.datetime_format) .. M.config.notes.extension
