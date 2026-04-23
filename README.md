@@ -9,10 +9,12 @@ Using `lazy.nvim`:
   "tom-draper/tear.nvim",
   config = function()
     require("tear").setup({
-      notes_path = "~/notes/tear",  -- Where notes are saved
-      naming_strategy = "timestamp", -- or "content" to generate from first line
-      datetime_format = "%Y-%m-%d-%H-%M-%S",
-      file_extension = ".md",
+      notes = {
+        path = "~/notes/tear",  -- Where notes are saved
+        file_extension = ".md",
+        filename_strategy = "timestamp", -- or "content" to generate from first line
+        datetime_format = "%Y-%m-%d-%H-%M-%S",
+      },
     })
   end,
 }
@@ -25,7 +27,9 @@ use {
   "tom-draper/tear.nvim",
   config = function()
     require("tear").setup({
-      notes_path = "~/notes/tear",
+      notes = {
+        path = "~/notes/tear",
+      },
     })
   end,
 }
