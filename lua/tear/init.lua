@@ -6,13 +6,19 @@ local fn = vim.fn
 
 -- Default configuration
 M.config = {
-	notes_path = vim.fn.expand("~/notes/tear"),
-	naming_strategy = "timestamp", -- "timestamp" or "content"
-	datetime_format = "%Y-%m-%d-%H-%M-%S",
-	metadata_file = ".tear_metadata.json",
-	auto_save_metadata = true,
-	file_extension = ".md",
-	show_hashtags = true,
+	notes = {
+		path = vim.fn.expand("~/notes/tear"),
+		extension = ".md",
+		filename_strategy = "timestamp", -- "timestamp" or "title"
+		datetime_format = "%Y-%m-%d-%H-%M-%S",
+	},
+	metadata = {
+		index_file = ".tear_metadata.json",
+		auto_persist = true,
+	},
+	ui = {
+		enable_hashtag_display = true,
+	},
 }
 
 -- Metadata store (in-memory cache)
@@ -32,7 +38,7 @@ local function generate_filename_from_content(lines)
 	first_line = first_line:gsub("^#+%s*", ""):gsub("^%s*(.-)%s*$", "%1")
 
 	if first_line == "" then
-		return os.date(M.config.datetime_format)
+		return os.date(M.config.notes.datetime_format)
 	end
 
 	-- Convert to lowercase, replace spaces/special chars with hyphens
@@ -101,7 +107,7 @@ end
 
 -- Load metadata from disk
 local function load_metadata()
-	local metadata_path = M.config.notes_path .. "/" .. M.config.metadata_file
+	local metadata_path = M.config.notes.path .. "/" .. M.config.metadata.index_file
 	local file = io.open(metadata_path, "r")
 
 	if not file then
@@ -117,8 +123,8 @@ end
 
 -- Save metadata to disk
 local function save_metadata()
-	ensure_directory(M.config.notes_path)
-	local metadata_path = M.config.notes_path .. "/" .. M.config.metadata_file
+	ensure_directory(M.config.notes.path)
+	local metadata_path = M.config.notes.path .. "/" .. M.config.metadata.index_file
 	local file = io.open(metadata_path, "w")
 
 	if not file then
@@ -144,7 +150,7 @@ local function update_metadata(filepath, lines)
 		filepath = filepath,
 	}
 
-	if M.config.auto_save_metadata then
+	if M.config.metadata.auto_persist then
 		save_metadata()
 	end
 end
@@ -156,7 +162,7 @@ function M.tear()
 		if api.nvim_buf_is_loaded(bufnr) then
 			local bufname = api.nvim_buf_get_name(bufnr)
 			local buftype = api.nvim_buf_get_option(bufnr, "buftype")
-			
+
 			if buftype == "acwrite" and bufname:match("%[Tear Note") then
 				-- Found an existing unsaved tear note, switch to it
 				api.nvim_set_current_buf(bufnr)
@@ -194,25 +200,25 @@ function M.tear()
 			if ok and custom_name then
 				-- Use the custom name set by :TearName
 				filename = custom_name
-				if not filename:match(vim.pesc(M.config.file_extension) .. "$") then
-					filename = filename .. M.config.file_extension
+				if not filename:match(vim.pesc(M.config.notes.extension) .. "$") then
+					filename = filename .. M.config.notes.extension
 				end
-			elseif M.config.naming_strategy == "content" then
-				filename = generate_filename_from_content(lines) .. M.config.file_extension
+			elseif M.config.notes.filename_strategy == "title" then
+				filename = generate_filename_from_content(lines) .. M.config.notes.extension
 			else
-				filename = os.date(M.config.datetime_format) .. M.config.file_extension
+				filename = os.date(M.config.notes.datetime_format) .. M.config.notes.extension
 			end
 
 			-- Save file
-			ensure_directory(M.config.notes_path)
-			local filepath = M.config.notes_path .. "/" .. filename
+			ensure_directory(M.config.notes.path)
+			local filepath = M.config.notes.path .. "/" .. filename
 
 			-- Check if file already exists (in case of very fast saves)
 			local counter = 1
 			while fn.filereadable(filepath) == 1 do
 				local base = filename:match("(.+)%..+$") or filename
 				local ext = filename:match("%.(.+)$") or ""
-				filepath = M.config.notes_path .. "/" .. base .. "-" .. counter .. "." .. ext
+				filepath = M.config.notes.path .. "/" .. base .. "-" .. counter .. "." .. ext
 				counter = counter + 1
 			end
 
@@ -309,7 +315,7 @@ function M.recent(count)
 				idx = tonumber(idx)
 				local note = notes[idx]
 				if note then
-					local filepath = M.config.notes_path .. "/" .. note.filename
+					local filepath = M.config.notes.path .. "/" .. note.filename
 					api.nvim_command("close")
 					api.nvim_command("edit " .. filepath)
 				end
@@ -409,7 +415,7 @@ function M.search(query)
 				idx = tonumber(idx)
 				local result = results[idx]
 				if result then
-					local filepath = M.config.notes_path .. "/" .. result.filename
+					local filepath = M.config.notes.path .. "/" .. result.filename
 					api.nvim_command("close")
 					api.nvim_command("edit " .. filepath)
 				end
@@ -503,19 +509,19 @@ function M.name(new_name)
 			vim.ui.input({prompt = "Set name for note (without extension): "}, function(input)
 				if input then
 					api.nvim_buf_set_var(bufnr, "tear_unsaved_name", input)
-					vim.notify("Name set to: " .. input .. M.config.file_extension, vim.log.levels.INFO)
+					vim.notify("Name set to: " .. input .. M.config.notes.extension, vim.log.levels.INFO)
 				end
 			end)
 			return
 		end
 
 		api.nvim_buf_set_var(bufnr, "tear_unsaved_name", new_name)
-		vim.notify("Name set to: " .. new_name .. (new_name:match(vim.pesc(M.config.file_extension) .. "$") and "" or M.config.file_extension), vim.log.levels.INFO)
+		vim.notify("Name set to: " .. new_name .. (new_name:match(vim.pesc(M.config.notes.extension) .. "$") and "" or M.config.notes.extension), vim.log.levels.INFO)
 		return
 	end
 
 	-- Check if current file is in the notes directory
-	if not current_file:match("^" .. vim.pesc(M.config.notes_path)) then
+	if not current_file:match("^" .. vim.pesc(M.config.notes.path)) then
 		vim.notify("Current file is not a tear note", vim.log.levels.WARN)
 		return
 	end
@@ -530,12 +536,12 @@ function M.name(new_name)
 	end
 
 	-- Ensure the name has the correct extension
-	if not new_name:match(vim.pesc(M.config.file_extension) .. "$") then
-		new_name = new_name .. M.config.file_extension
+	if not new_name:match(vim.pesc(M.config.notes.extension) .. "$") then
+		new_name = new_name .. M.config.notes.extension
 	end
 
 	local old_filename = fn.fnamemodify(current_file, ":t")
-	local new_filepath = M.config.notes_path .. "/" .. new_name
+	local new_filepath = M.config.notes.path .. "/" .. new_name
 
 	-- Check if target file already exists
 	if fn.filereadable(new_filepath) == 1 then
@@ -570,13 +576,13 @@ function M.reindex()
 	vim.notify("Reindexing notes...", vim.log.levels.INFO)
 	metadata_cache = {}
 
-	local notes_path = M.config.notes_path
+	local notes_path = M.config.notes.path
 	if fn.isdirectory(notes_path) == 0 then
 		vim.notify("Notes directory does not exist", vim.log.levels.WARN)
 		return
 	end
 
-	local files = vim.split(fn.glob(notes_path .. "/*" .. M.config.file_extension), "\n")
+	local files = vim.split(fn.glob(notes_path .. "/*" .. M.config.notes.extension), "\n")
 
 	for _, filepath in ipairs(files) do
 		if filepath ~= "" then
@@ -596,29 +602,29 @@ end
 
 -- Display hashtags from current buffer in the command line
 function M.show_hashtags()
-    local bufnr = api.nvim_get_current_buf()
-    local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    local tags = extract_hashtags(lines)
+	local bufnr = api.nvim_get_current_buf()
+	local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+	local tags = extract_hashtags(lines)
 
-    if #tags > 0 then
-        local tag_str = ""
-        for _, tag in ipairs(tags) do
-            tag_str = tag_str .. "#" .. tag .. " "
-        end
-        tag_str = tag_str:gsub("%s+$", "") -- Remove trailing space
+	if #tags > 0 then
+		local tag_str = ""
+		for _, tag in ipairs(tags) do
+			tag_str = tag_str .. "#" .. tag .. " "
+		end
+		tag_str = tag_str:gsub("%s+$", "") -- Remove trailing space
 
-        -- Get the foreground color of NonText (or LineNr)
-        local hl = vim.api.nvim_get_hl_by_name("LineNr", true) -- true = get RGB
-        -- hl.foreground is a number; convert to hex
-        local fg_hex = string.format("#%06x", hl.foreground)
+		-- Get the foreground color of NonText (or LineNr)
+		local hl = vim.api.nvim_get_hl_by_name("LineNr", true) -- true = get RGB
+		-- hl.foreground is a number; convert to hex
+		local fg_hex = string.format("#%06x", hl.foreground)
 
-        -- Use echohl with a custom highlight
-        vim.cmd(string.format("echohl NONE | echon ''")) -- reset
-        vim.cmd(string.format("highlight MyTags guifg=%s", fg_hex))
-        vim.cmd(string.format("echohl MyTags"))
-        vim.cmd(string.format('echon "%s"', tag_str))
-        vim.cmd("echohl NONE")
-    end
+		-- Use echohl with a custom highlight
+		vim.cmd(string.format("echohl NONE | echon ''")) -- reset
+		vim.cmd(string.format("highlight MyTags guifg=%s", fg_hex))
+		vim.cmd(string.format("echohl MyTags"))
+		vim.cmd(string.format('echon "%s"', tag_str))
+		vim.cmd("echohl NONE")
+	end
 end
 
 -- Auto-display hashtags when cursor stops moving
@@ -628,7 +634,7 @@ function M.setup_auto_hashtag_display()
 	-- Update hashtags on cursor hold (after 'updatetime' ms of no cursor movement)
 	api.nvim_create_autocmd({"CursorHold", "CursorHoldI"}, {
 		group = aug,
-		pattern = M.config.notes_path .. "/*" .. M.config.file_extension,
+		pattern = M.config.notes.path .. "/*" .. M.config.notes.extension,
 		callback = function()
 			M.show_hashtags()
 		end,
@@ -637,7 +643,7 @@ function M.setup_auto_hashtag_display()
 	-- Also update when entering a tear note buffer
 	api.nvim_create_autocmd("BufEnter", {
 		group = aug,
-		pattern = M.config.notes_path .. "/*" .. M.config.file_extension,
+		pattern = M.config.notes.path .. "/*" .. M.config.notes.extension,
 		callback = function()
 			M.show_hashtags()
 		end,
@@ -646,7 +652,7 @@ function M.setup_auto_hashtag_display()
 	-- And when saving
 	api.nvim_create_autocmd("BufWritePost", {
 		group = aug,
-		pattern = M.config.notes_path .. "/*" .. M.config.file_extension,
+		pattern = M.config.notes.path .. "/*" .. M.config.notes.extension,
 		callback = function()
 			M.show_hashtags()
 		end,
@@ -656,9 +662,10 @@ end
 -- Setup function
 function M.setup(opts)
 	M.config = vim.tbl_deep_extend("force", M.config, opts or {})
-	M.config.notes_path = fn.expand(M.config.notes_path)
 
-	ensure_directory(M.config.notes_path)
+	M.config.notes.path = fn.expand(M.config.notes.path)
+
+	ensure_directory(M.config.notes.path)
 	metadata_cache = load_metadata()
 
 	-- Create commands
@@ -679,7 +686,7 @@ function M.setup(opts)
 	local aug = api.nvim_create_augroup("TearAutoUpdate", {clear = true})
 	api.nvim_create_autocmd("BufWritePost", {
 		group = aug,
-		pattern = M.config.notes_path .. "/*" .. M.config.file_extension,
+		pattern = M.config.notes.path .. "/*" .. M.config.notes.extension,
 		callback = function(ev)
 			-- Don't update if this is a new Tear note (handled by BufWriteCmd)
 			local bufnr = ev.buf
@@ -693,7 +700,7 @@ function M.setup(opts)
 		end,
 	})
 
-	if M.config.show_hashtags then
+	if M.config.ui.enable_hashtag_display then
 		M.setup_auto_hashtag_display()
 	end
 end
