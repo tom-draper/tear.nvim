@@ -11,7 +11,7 @@ Using `lazy.nvim`:
     require("tear").setup({
       notes = {
         path = "~/notes/tear",  -- Where notes are saved
-        file_extension = ".md",
+        extension = ".md",
         filename_strategy = "timestamp", -- or "content" to generate from first line
         datetime_format = "%Y-%m-%d-%H-%M-%S",
       },
@@ -45,6 +45,12 @@ Tear uses `#tags` within notes combined with content to automatically understand
 :Tear
 ```
 
+For a single-line capture without leaving your current window:
+
+```
+:TearQuick This is a passing thought #inbox
+```
+
 **2. Type some content:**
 
 ```md
@@ -63,11 +69,16 @@ Just save with `:w`.
 :TearRecent
 ```
 
+Recent notes include a short preview from the note body.
+Press `<CR>` to open the latest note, or use `j`/`k` and arrow keys to choose another note.
+
 **4. Search by tag:**
 
 ```
 :TearSearch books
 ```
+
+Search matches tags, keywords, previews, and note body text.
 
 **5. Visualize notes:**
 
