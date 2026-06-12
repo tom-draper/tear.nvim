@@ -291,46 +291,87 @@ local function select_note(prompt, notes)
 	end)
 end
 
+local function centered_float_config(line_count)
+	local columns = math.max(1, vim.o.columns)
+	local editor_lines = math.max(1, vim.o.lines - vim.o.cmdheight)
+	local width = math.max(1, math.min(120, columns - 2, math.floor(columns * 0.9)))
+	local height = math.max(1, math.min(line_count, editor_lines - 2))
+
+	return {
+		relative = "editor",
+		width = width,
+		height = height,
+		col = math.max(0, math.floor((columns - width) / 2)),
+		row = math.max(0, math.floor((editor_lines - height) / 2)),
+		style = "minimal",
+		border = "rounded",
+		title = " Recent Notes ",
+		title_pos = "center",
+	}
+end
+
+local function truncate_display(text, width)
+	if width <= 3 or fn.strdisplaywidth(text) <= width then
+		return text
+	end
+
+	return fn.strcharpart(text, 0, width - 3) .. "..."
+end
+
 local function recent_note_picker(notes)
 	if #notes == 0 then
 		vim.notify("No notes found. Create one with :Tear", vim.log.levels.INFO)
 		return
 	end
 
-	local lines = {}
-	for i, note in ipairs(notes) do
-		table.insert(lines, string.format("%d. %s", i, note_display(note)))
+	local function picker_lines(width)
+		local lines = {}
+		for i, note in ipairs(notes) do
+			table.insert(lines, truncate_display(string.format("%d. %s", i, note_display(note)), width))
+		end
+		return lines
 	end
 
+	local config = centered_float_config(#notes)
+	local lines = picker_lines(config.width)
 	local buf = api.nvim_create_buf(false, true)
 	api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 	api.nvim_buf_set_option(buf, "modifiable", false)
 	api.nvim_buf_set_option(buf, "filetype", "markdown")
+	api.nvim_buf_set_option(buf, "bufhidden", "wipe")
 
-	local width = math.max(1, math.min(100, vim.o.columns - 4))
-	local height = math.max(1, math.min(#lines, vim.o.lines - 4))
-	api.nvim_open_win(buf, true, {
-		relative = "editor",
-		width = width,
-		height = height,
-		col = math.max(0, math.floor((vim.o.columns - width) / 2)),
-		row = math.max(0, math.floor((vim.o.lines - height) / 2)),
-		style = "minimal",
-		border = "rounded",
-		title = " Recent Notes ",
-		title_pos = "center",
+	local win = api.nvim_open_win(buf, true, config)
+	api.nvim_win_set_option(win, "wrap", false)
+	api.nvim_win_set_option(win, "cursorline", true)
+
+	local aug = api.nvim_create_augroup("TearRecentPicker_" .. buf, {clear = true})
+	api.nvim_create_autocmd("VimResized", {
+		group = aug,
+		callback = function()
+			if not api.nvim_win_is_valid(win) or not api.nvim_buf_is_valid(buf) then
+				pcall(api.nvim_del_augroup_by_id, aug)
+				return
+			end
+
+			local updated_config = centered_float_config(#notes)
+			api.nvim_win_set_config(win, updated_config)
+			api.nvim_buf_set_option(buf, "modifiable", true)
+			api.nvim_buf_set_lines(buf, 0, -1, false, picker_lines(updated_config.width))
+			api.nvim_buf_set_option(buf, "modifiable", false)
+		end,
 	})
 
 	local function move(delta)
-		local row = api.nvim_win_get_cursor(0)[1]
+		local row = api.nvim_win_get_cursor(win)[1]
 		row = math.max(1, math.min(#notes, row + delta))
-		api.nvim_win_set_cursor(0, {row, 0})
+		api.nvim_win_set_cursor(win, {row, 0})
 	end
 
 	local function open_selected()
-		local row = api.nvim_win_get_cursor(0)[1]
+		local row = api.nvim_win_get_cursor(win)[1]
 		local note = notes[row]
 		if note then
+			pcall(api.nvim_del_augroup_by_id, aug)
 			api.nvim_command("close")
 			open_note(note.filepath or (M.config.notes.path .. "/" .. note.filename))
 		end
@@ -338,8 +379,14 @@ local function recent_note_picker(notes)
 
 	local map_opts = {buffer = buf, nowait = true, silent = true}
 	vim.keymap.set("n", "<CR>", open_selected, map_opts)
-	vim.keymap.set("n", "q", "<cmd>close<CR>", map_opts)
-	vim.keymap.set("n", "<Esc>", "<cmd>close<CR>", map_opts)
+	vim.keymap.set("n", "q", function()
+		pcall(api.nvim_del_augroup_by_id, aug)
+		api.nvim_command("close")
+	end, map_opts)
+	vim.keymap.set("n", "<Esc>", function()
+		pcall(api.nvim_del_augroup_by_id, aug)
+		api.nvim_command("close")
+	end, map_opts)
 	vim.keymap.set("n", "j", function() move(1) end, map_opts)
 	vim.keymap.set("n", "<Down>", function() move(1) end, map_opts)
 	vim.keymap.set("n", "k", function() move(-1) end, map_opts)
@@ -529,7 +576,9 @@ function M.search(query)
 	if not query or query == "" then
 		vim.ui.input({prompt = "Search (tag or keyword): "}, function(input)
 			if input then
-				M.search(input)
+				vim.schedule(function()
+					M.search(input)
+				end)
 			end
 		end)
 		return
@@ -598,6 +647,7 @@ function M.search(query)
 	end)
 
 	if #results == 0 then
+		vim.cmd("redraw")
 		vim.notify(string.format("No notes found matching '%s'", original_query), vim.log.levels.INFO)
 		return
 	end
