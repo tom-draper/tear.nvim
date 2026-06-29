@@ -527,6 +527,10 @@ function M.tear()
 			api.nvim_buf_set_name(bufnr, filepath)
 			api.nvim_buf_set_option(bufnr, "modified", false)
 
+			-- Remove this BufWriteCmd handler so future ':w' writes go through
+			-- Neovim's normal file-writing path instead of creating a new note.
+			pcall(api.nvim_del_augroup_by_id, aug)
+
 			vim.notify("Note saved: " .. fn.fnamemodify(filepath, ":t"), vim.log.levels.INFO)
 		end,
 	})
