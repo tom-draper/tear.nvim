@@ -18,6 +18,13 @@ M.config = {
 	},
 	ui = {
 		enable_hashtag_display = true,
+		recent = {
+			-- Colours for the :TearRecent list. nil = derive from the active
+			-- colorscheme (bar from Visual, selection from PmenuSel, tags from Special).
+			bar_color = nil,
+			selection_color = nil,
+			tag_color = nil,
+		},
 	},
 }
 
@@ -235,6 +242,7 @@ local function update_metadata(filepath, lines, opts)
 		tags = tags,
 		keywords = keywords,
 		excerpt = make_excerpt(lines),
+		size = #table.concat(lines, "\n"),
 		filepath = filepath,
 	}
 
@@ -306,7 +314,7 @@ local function centered_float_config(line_count)
 		style = "minimal",
 		border = "rounded",
 		title = " Recent Notes ",
-		title_pos = "center",
+		title_pos = "left",
 	}
 end
 
@@ -318,75 +326,263 @@ local function truncate_display(text, width)
 	return fn.strcharpart(text, 0, width - 3) .. "..."
 end
 
+-- Resolve a hex colour from an existing highlight group attribute.
+local function hl_hex(name, attr)
+	local ok, hl = pcall(api.nvim_get_hl, 0, { name = name, link = false })
+	if ok and hl[attr] then
+		return string.format("#%06x", hl[attr])
+	end
+	return nil
+end
+
+-- Byte offset within `line` at a given 0-based display column (handles wide chars).
+local function display_col_to_byte(line, col)
+	if col <= 0 then
+		return 0
+	end
+	local nchars = fn.strchars(line)
+	local acc = 0
+	for i = 0, nchars - 1 do
+		acc = acc + fn.strdisplaywidth(fn.strcharpart(line, i, 1))
+		if acc >= col then
+			return #fn.strcharpart(line, 0, i + 1)
+		end
+	end
+	return #line
+end
+
+local recent_ns = api.nvim_create_namespace("tear_recent")
+local recent_sel_ns = api.nvim_create_namespace("tear_recent_sel")
+
+local function ensure_recent_highlights()
+	local ui = M.config.ui.recent or {}
+	local bar = ui.bar_color or hl_hex("Visual", "bg") or "#313244"
+	local sel = ui.selection_color or hl_hex("PmenuSel", "bg") or hl_hex("CursorLine", "bg") or "#45475a"
+	-- Faint tags: derive from Comment (dimmed foreground in most themes)
+	local tag = ui.tag_color or hl_hex("Comment", "fg") or "#6c7086"
+	api.nvim_set_hl(0, "TearRecentBar", { bg = bar })
+	api.nvim_set_hl(0, "TearRecentSel", { bg = sel })
+	api.nvim_set_hl(0, "TearRecentTag", { fg = tag })
+end
+
+-- Fixed-width timestamp column so dates line up down the list.
+local TS_FORMAT = "%Y-%m-%d %H:%M"
+
+-- Build the body of a Lua pattern from the configured datetime_format so we can
+-- recognise filenames that are just a timestamp (redundant with the date column).
+local function timestamp_name_body()
+	local fmt = M.config.notes.datetime_format or "%Y-%m-%d-%H-%M-%S"
+	local out, i = {}, 1
+	while i <= #fmt do
+		local c = fmt:sub(i, i)
+		if c == "%" then
+			local spec = fmt:sub(i + 1, i + 1)
+			out[#out + 1] = (spec == "Y") and "%d%d%d%d" or "%d%d"
+			i = i + 2
+		else
+			out[#out + 1] = c:match("[%^%$%(%)%.%[%]%*%+%-%?%%]") and ("%" .. c) or c
+			i = i + 1
+		end
+	end
+	return table.concat(out)
+end
+
+-- Display name for a note: hidden (empty) when the filename is just a timestamp,
+-- optionally with a "-N" uniqueness counter. (Lua patterns can't make a group
+-- optional, so we test both forms.)
+local function note_display_name(note, ts_body)
+	local stem = fn.fnamemodify(note.filename, ":t:r")
+	if ts_body and (stem:match("^" .. ts_body .. "$") or stem:match("^" .. ts_body .. "%-%d+$")) then
+		return ""
+	end
+	return stem
+end
+
+-- Returns the rendered line, plus the 0-based byte column where the right-aligned
+-- tag group begins (or nil when the note has no tags).
+local function recent_line(note, width, name, name_w)
+	local left_parts = {}
+
+	-- Filename column (omitted entirely when no note has a visible name).
+	if name_w > 0 then
+		local nd = fn.strdisplaywidth(name)
+		if nd > name_w then
+			name = truncate_display(name, name_w)
+			nd = fn.strdisplaywidth(name)
+		end
+		left_parts[#left_parts + 1] = name .. string.rep(" ", math.max(0, name_w - nd))
+		left_parts[#left_parts + 1] = "│"
+	end
+
+	local date = os.date(TS_FORMAT, note.modified or os.time())
+	local tags = note.tags or {}
+	local label = note.excerpt or ""
+
+	-- Tags render on the right, so strip them from the excerpt to avoid duplication.
+	if #tags > 0 and label ~= "" then
+		label = label:gsub("#[%w_%-]+", ""):gsub("%s+", " "):gsub("^%s*(.-)%s*$", "%1")
+	end
+
+	left_parts[#left_parts + 1] = date
+	left_parts[#left_parts + 1] = "│"
+	if label ~= "" then
+		left_parts[#left_parts + 1] = label
+	end
+	local left = table.concat(left_parts, " ")
+
+	-- Build the right-aligned tag string, capped so it can't take over the line.
+	local tagstr = #tags > 0 and ("#" .. table.concat(tags, " #")) or ""
+	local tagw = fn.strdisplaywidth(tagstr)
+	local tag_cap = math.floor(width * 0.5)
+	if tagw > tag_cap then
+		tagstr = truncate_display(tagstr, tag_cap)
+		tagw = fn.strdisplaywidth(tagstr)
+	end
+
+	-- Truncate the left part so it never collides with the tags (keep a 1-col gap).
+	local avail = math.max(1, width - (tagw > 0 and tagw + 1 or 0))
+	local ld = fn.strdisplaywidth(left)
+	if ld > avail then
+		left = truncate_display(left, avail)
+		ld = fn.strdisplaywidth(left)
+	end
+
+	if tagw > 0 then
+		local prefix = left .. string.rep(" ", math.max(1, width - tagw - ld))
+		return prefix .. tagstr, #prefix
+	end
+	return left .. string.rep(" ", math.max(0, width - ld)), nil
+end
+
 local function recent_note_picker(notes)
 	if #notes == 0 then
 		vim.notify("No notes found. Create one with :Tear", vim.log.levels.INFO)
 		return
 	end
 
-	local function picker_lines(width)
-		local lines = {}
-		for i, note in ipairs(notes) do
-			table.insert(lines, truncate_display(string.format("%d. %s", i, note_display(note)), width))
-		end
-		return lines
+	-- Largest note fills the bar completely; the rest scale relative to it.
+	-- Filenames that are just a timestamp are hidden, so the name column only
+	-- needs to fit the notes that actually have a meaningful name.
+	local ts_body = timestamp_name_body()
+	local names = {}
+	local max_size = 1
+	local max_name = 0
+	for i, note in ipairs(notes) do
+		max_size = math.max(max_size, note.size or 0)
+		names[i] = note_display_name(note, ts_body)
+		max_name = math.max(max_name, fn.strdisplaywidth(names[i]))
 	end
 
-	local config = centered_float_config(#notes)
-	local lines = picker_lines(config.width)
 	local buf = api.nvim_create_buf(false, true)
-	api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-	api.nvim_buf_set_option(buf, "modifiable", false)
-	api.nvim_buf_set_option(buf, "filetype", "markdown")
-	api.nvim_buf_set_option(buf, "bufhidden", "wipe")
-
+	local config = centered_float_config(#notes)
 	local win = api.nvim_open_win(buf, true, config)
-	api.nvim_win_set_option(win, "wrap", false)
-	api.nvim_win_set_option(win, "cursorline", true)
 
-	local aug = api.nvim_create_augroup("TearRecentPicker_" .. buf, {clear = true})
+	ensure_recent_highlights()
+	vim.bo[buf].filetype = "tear-recent"
+	vim.bo[buf].bufhidden = "wipe"
+	vim.wo[win].wrap = false
+	vim.wo[win].cursorline = false
+
+	local function paint(width)
+		-- Filename column: fit the longest visible name (capped), or 0 when every
+		-- note is timestamp-named and the column can be dropped entirely.
+		local name_w = (max_name > 0) and math.max(1, math.min(28, max_name, math.floor(width * 0.4))) or 0
+		local lines, tag_starts = {}, {}
+		for i, note in ipairs(notes) do
+			lines[i], tag_starts[i] = recent_line(note, width, names[i], name_w)
+		end
+
+		vim.bo[buf].modifiable = true
+		api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+		vim.bo[buf].modifiable = false
+
+		api.nvim_buf_clear_namespace(buf, recent_ns, 0, -1)
+		for row, note in ipairs(notes) do
+			local line = lines[row]
+			-- Proportional background bar (content size relative to the largest note)
+			local ratio = (note.size or 0) / max_size
+			local fill = display_col_to_byte(line, math.floor(width * ratio + 0.5))
+			if fill > 0 then
+				api.nvim_buf_set_extmark(buf, recent_ns, row - 1, 0, {
+					end_col = fill,
+					hl_group = "TearRecentBar",
+					priority = 100,
+				})
+			end
+			-- Faint hashtags on the right
+			if tag_starts[row] then
+				api.nvim_buf_set_extmark(buf, recent_ns, row - 1, tag_starts[row], {
+					end_col = #line,
+					hl_group = "TearRecentTag",
+					priority = 200,
+				})
+			end
+		end
+	end
+
+	local function highlight_selection()
+		if not (api.nvim_win_is_valid(win) and api.nvim_buf_is_valid(buf)) then
+			return
+		end
+		local row = api.nvim_win_get_cursor(win)[1]
+		api.nvim_buf_clear_namespace(buf, recent_sel_ns, 0, -1)
+		api.nvim_buf_set_extmark(buf, recent_sel_ns, row - 1, 0, {
+			end_row = row,
+			hl_group = "TearRecentSel",
+			hl_eol = true,
+			priority = 250,
+		})
+	end
+
+	paint(config.width)
+	highlight_selection()
+
+	local aug = api.nvim_create_augroup("TearRecentPicker_" .. buf, { clear = true })
 	api.nvim_create_autocmd("VimResized", {
 		group = aug,
 		callback = function()
-			if not api.nvim_win_is_valid(win) or not api.nvim_buf_is_valid(buf) then
+			if not (api.nvim_win_is_valid(win) and api.nvim_buf_is_valid(buf)) then
 				pcall(api.nvim_del_augroup_by_id, aug)
 				return
 			end
-
-			local updated_config = centered_float_config(#notes)
-			api.nvim_win_set_config(win, updated_config)
-			api.nvim_buf_set_option(buf, "modifiable", true)
-			api.nvim_buf_set_lines(buf, 0, -1, false, picker_lines(updated_config.width))
-			api.nvim_buf_set_option(buf, "modifiable", false)
+			local updated = centered_float_config(#notes)
+			api.nvim_win_set_config(win, updated)
+			paint(updated.width)
+			highlight_selection()
 		end,
+	})
+	api.nvim_create_autocmd("CursorMoved", {
+		group = aug,
+		buffer = buf,
+		callback = highlight_selection,
 	})
 
 	local function move(delta)
 		local row = api.nvim_win_get_cursor(win)[1]
 		row = math.max(1, math.min(#notes, row + delta))
-		api.nvim_win_set_cursor(win, {row, 0})
+		api.nvim_win_set_cursor(win, { row, 0 })
+	end
+
+	local function close()
+		pcall(api.nvim_del_augroup_by_id, aug)
+		if api.nvim_win_is_valid(win) then
+			api.nvim_win_close(win, true)
+		end
 	end
 
 	local function open_selected()
 		local row = api.nvim_win_get_cursor(win)[1]
 		local note = notes[row]
+		close()
 		if note then
-			pcall(api.nvim_del_augroup_by_id, aug)
-			api.nvim_command("close")
 			open_note(note.filepath or (M.config.notes.path .. "/" .. note.filename))
 		end
 	end
 
-	local map_opts = {buffer = buf, nowait = true, silent = true}
+	local map_opts = { buffer = buf, nowait = true, silent = true }
 	vim.keymap.set("n", "<CR>", open_selected, map_opts)
-	vim.keymap.set("n", "q", function()
-		pcall(api.nvim_del_augroup_by_id, aug)
-		api.nvim_command("close")
-	end, map_opts)
-	vim.keymap.set("n", "<Esc>", function()
-		pcall(api.nvim_del_augroup_by_id, aug)
-		api.nvim_command("close")
-	end, map_opts)
+	vim.keymap.set("n", "q", close, map_opts)
+	vim.keymap.set("n", "<Esc>", close, map_opts)
 	vim.keymap.set("n", "j", function() move(1) end, map_opts)
 	vim.keymap.set("n", "<Down>", function() move(1) end, map_opts)
 	vim.keymap.set("n", "k", function() move(-1) end, map_opts)
@@ -402,6 +598,7 @@ local function sorted_notes()
 			tags = meta.tags or {},
 			keywords = meta.keywords or {},
 			excerpt = meta.excerpt or "",
+			size = meta.size or 0,
 			filepath = meta.filepath or (M.config.notes.path .. "/" .. filename),
 		})
 	end
@@ -427,7 +624,7 @@ local function metadata_is_stale()
 
 		local meta = metadata_cache[filename]
 		local mtime = fn.getftime(filepath)
-		if not meta or not meta.excerpt or not meta.filepath or (mtime > 0 and meta.modified ~= mtime) then
+		if not meta or not meta.excerpt or not meta.filepath or not meta.size or (mtime > 0 and meta.modified ~= mtime) then
 			return true
 		end
 	end
@@ -560,18 +757,19 @@ function M.quick(text)
 	end)
 end
 
--- Show recent notes
+-- Show recent notes (all of them by default; pass a count to limit)
 function M.recent(count)
-	count = count or 10
+	local all = sorted_notes()
 
-	local notes = {}
-	for i, note in ipairs(sorted_notes()) do
-		if i > count then
-			break
-		end
-		table.insert(notes, note)
+	if not count or count <= 0 or count >= #all then
+		recent_note_picker(all)
+		return
 	end
 
+	local notes = {}
+	for i = 1, count do
+		notes[i] = all[i]
+	end
 	recent_note_picker(notes)
 end
 
@@ -896,7 +1094,7 @@ function M.setup(opts)
 		M.quick(opts.args)
 	end, {nargs = "*"})
 	api.nvim_create_user_command("TearRecent", function(opts)
-		M.recent(tonumber(opts.args) or 10)
+		M.recent(tonumber(opts.args))
 	end, {nargs = "?"})
 	api.nvim_create_user_command("TearSearch", function(opts)
 		M.search(opts.args)
